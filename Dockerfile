@@ -5,8 +5,8 @@ COPY requirements.txt .
 
 RUN pip install -r requirements.txt
 
-ADD kitchen.py .
+ADD main.py .
 
-ADD foods.py .
+ADD config.py .
 
-CMD ["python", "./kitchen.py"]
+CMD ["python", "./main.py"]
