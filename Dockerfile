@@ -9,4 +9,6 @@ ADD main.py .
 
 ADD config.py .
 
+EXPOSE 5000
+
 CMD ["python", "./main.py"]
