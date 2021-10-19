@@ -5,9 +5,7 @@ COPY requirements.txt .
 
 RUN pip install -r requirements.txt
 
-ADD main.py .
-
-ADD config.py .
+COPY . .
 
 EXPOSE 5000
 
