@@ -7,6 +7,10 @@
 > Moglan Mihai
 > 
 
+
+More detailed README will be added later!
+
+
 #### Run
 
 ```bash
