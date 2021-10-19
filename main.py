@@ -1,132 +1,77 @@
-import config as config
-import time
+import addons
 import logging
-import queue
 import threading
-import itertools
-import requests
-from flask import Flask, request
+from flask import Flask
+from flask import request
+from actors.Kitchen import Kitchen
+import coloredlogs
 
-logging.basicConfig(filename='kitchen.log', level=logging.DEBUG, format='%(asctime)s:  %(message)s', datefmt="%m/%d/%Y %I:%M:%S %p")
+logging.basicConfig(filename='kitchen.log', level=logging.DEBUG, format='%(asctime)s: %(threadName)s: %(message)s', datefmt="%m/%d/%Y %I:%M:%S %p")
 logger = logging.getLogger(__name__)
+coloredlogs.install(level='DEBUG')
 
-app = Flask(__name__)
+APP_HOST = '0.0.0.0'
 
-counter = itertools.count()
+app1 = Flask('Kitchen - 1')
+app2 = Flask('Kitchen - 2')
+app3 = Flask('Kitchen - 3')
+app4 = Flask('Kitchen - 4')
 
-@app.route('/order', methods=['POST'])
-def order():
-    data = request.get_json()
-    logger.info(f'NEW ORDER {data["order_id"][0:4]} | priority: {data["priority"]} | items: {data["items"]}\n')
-    convert_order_to_food_items(data)
-    return {'isSuccess': True}
+# each kitchen should be configured by the data returned from its corresponding dinning hall
+data1 = utils.fetch_kitchen_data_from_dh(4001)
+k1 = Kitchen(5001, 4001, 1, data1['cooks'], data1['ovens'], data1['stoves'], data1['menu'])
 
-def convert_order_to_food_items(data):
-    priority = -int(data['priority'])
-    kitchen_order = {
-        'order_id': data['order_id'],
-        'table_id': data['table_id'],
-        'waiter_id': data['waiter_id'],
-        'items': data['items'],
-        'priority': priority,
-        'max_wait': data['max_wait'],
-        'received_time': time.time(),
-        'cooking_details': queue.Queue(),
-        'is_done_counter': 0,
-        'time_start': data['time_start'],
-    }
-    config.ORDER_LIST.append(kitchen_order)
-    for item_id in data['items']:
-        food = next((f for i, f in enumerate(config.FOOD_LIST) if f['id'] == item_id), None)
-        if food is not None:
-            config.FOOD_ITEMS_Q.put_nowait((priority, next(counter), {
-                'food_id': food['id'],
-                'order_id': data['order_id'],
-                'priority': priority
-            }))
+data2 = utils.fetch_kitchen_data_from_dh(4002)
+k2 = Kitchen(5002, 4002, 2, data2['cooks'], data2['ovens'], data2['stoves'], data2['menu'])
 
+data3 = utils.fetch_kitchen_data_from_dh(4003)
+k3 = Kitchen(5003, 4003, 3, data3['cooks'], data3['ovens'], data3['stoves'], data3['menu'])
 
-def can_prepare(cook, ovens: queue.Queue, stoves: queue.Queue, food, order):
-    if food['complexity'] == cook['rank'] or food['complexity'] - 1 == cook['rank']:
-        apparatus = food['cooking-apparatus']
-        if apparatus == 'oven':
-            try:
-                o = ovens.get_nowait()
-                logger.info(f'{threading.current_thread().name} COOKING  foodId: {food["id"]} | orderId: {order["order_id"][0:4]} | priority: {order["priority"]} | oven: {o}')
-                return True
-            except Exception as e:
-                return False
-        elif apparatus == 'stove':
-            try:
-                s = stoves.get_nowait()
-                logger.info(f'{threading.current_thread().name} COOKING foodId: {food["id"]} | orderId: {order["order_id"][0:4]} | priority: {order["priority"]} | stove: {s}')
-                return True
-            except Exception as e:
-                return False
-        elif apparatus is None:
-            logger.info(f'{threading.current_thread().name} COOKING foodId: {food["id"]} | orderId: {order["order_id"][0:4]} | priority: {order["priority"]} (hands)')
-            return True
-        return False
-    return False
+data4 = utils.fetch_kitchen_data_from_dh(4004)
+k4 = Kitchen(5004, 4004, 4, data4['cooks'], data4['ovens'], data4['stoves'], data4['menu'])
+
+kitchens_apps = [{
+    'app': app1,
+    'kitchen': k1
+}, {
+    'app': app2,
+    'kitchen': k2
+}, {
+    'app': app3,
+    'kitchen': k3
+}, {
+    'app': app4,
+    'kitchen': k4
+}]
+
+for i, app_data in enumerate(kitchens_apps):
+    app = app_data['app']
+    kitchen = app_data['kitchen']
 
 
-def cook_hand_work(cook, ovens: queue.Queue, stoves: queue.Queue, food_items: queue.Queue):
-    while True:
-        try:
-            q_item = food_items.get_nowait()
-            food_item = q_item[2]
-            curr_counter = q_item[1]
-            food_details = next((f for f in config.FOOD_LIST if f['id'] == food_item['food_id']), None)
-            (order_idx, order_details) = next(((idx, order) for idx, order in enumerate(config.ORDER_LIST) if order['order_id'] == food_item['order_id']), (None, None))
-
-            if can_prepare(cook, ovens, stoves, food_details, order_details):
-                time.sleep(food_details['preparation-time'] * config.TIME_UNIT)
-                # check if all food items from order are done
-                config.ORDER_LIST[order_idx]['is_done_counter'] += 1
-                if config.ORDER_LIST[order_idx]['is_done_counter'] == len(config.ORDER_LIST[order_idx]['items']):
-                    # notify dinning hall
-                    logger.info(f'{threading.current_thread().name} PREPARED orderId: {order_details["order_id"][0:4]} | priority: {order_details["priority"]}')
-                    config.ORDER_LIST[order_idx]['cooking_details'].put({'food_id': food_details['id'], 'cook_id': cook['id']})
-                    payload = {
-                        **config.ORDER_LIST[order_idx],
-                        'cooking_time': int(time.time() - config.ORDER_LIST[order_idx]['received_time']),
-                        'cooking_details': list(config.ORDER_LIST[order_idx]['cooking_details'].queue)
-                    }
-                    requests.post('http://localhost:5000/distribution', json=payload, timeout=0.0000000001)
-                # add new free cooking apparatus to queue
-                apparatus = food_details['cooking-apparatus']
-                if apparatus == 'oven':
-                    n = ovens.qsize()
-                    ovens.put_nowait(n)
-                elif apparatus == 'stove':
-                    n = stoves.qsize()
-                    stoves.put_nowait(n)
-            else:
-                food_items.put_nowait((food_item['priority'], curr_counter, food_item))
-
-        except Exception as e:
-            pass
+    @app.route('/order', methods=['POST'])
+    def order(k=kitchen):
+        data = request.get_json()
+        logger.info(f'Kitchen-{k.id_} NEW ORDER "{data["order_id"]}" | priority: {data["priority"]} | items: {data["items"]}\n')
+        return k.receive_new_order(data)
 
 
-def cook_work(info, ovens, stoves, food_items):
-    # each cook can work on multiple food items at once
-    for i in range(info['proficiency']):
-        hand_thread = threading.Thread(target=cook_hand_work, args=(info, ovens, stoves, food_items,), daemon=True, name=f'#{i}-{info["name"]}-$')
-        hand_thread.start()
+def main():
+    open("kitchen.log", "w").close()
 
+    threading.Thread(target=lambda: app1.run(host=APP_HOST, port=k1.port, debug=False, use_reloader=False, threaded=True), name=f'FLASK-K1', daemon=True).start()
+    threading.Thread(target=lambda: app2.run(host=APP_HOST, port=k2.port, debug=False, use_reloader=False, threaded=True), name=f'FLASK-K2', daemon=True).start()
+    threading.Thread(target=lambda: app3.run(host=APP_HOST, port=k3.port, debug=False, use_reloader=False, threaded=True), name=f'FLASK-K2', daemon=True).start()
+    threading.Thread(target=lambda: app4.run(host=APP_HOST, port=k4.port, debug=False, use_reloader=False, threaded=True), name=f'FLASK-K2', daemon=True).start()
 
-def start_kitchen():
-    flask_thread = threading.Thread(target=lambda: app.run(host='0.0.0.0', port=8000, debug=False, use_reloader=False), daemon=True)
-    flask_thread.start()
+    threading.Thread(target=k1.start_kitchen, daemon=True).start()
+    threading.Thread(target=k2.start_kitchen, daemon=True).start()
+    threading.Thread(target=k3.start_kitchen, daemon=True).start()
+    threading.Thread(target=k4.start_kitchen, daemon=True).start()
 
-    for _, cook_data in enumerate(config.COOKS_LIST):
-        cook_thread = threading.Thread(target=cook_work, args=(cook_data, config.OVENS_Q, config.STOVES_Q, config.FOOD_ITEMS_Q,), daemon=True)
-        cook_thread.start()
-
-    # main thread loop
     while True:
         pass
 
 
 if __name__ == '__main__':
-    start_kitchen()
+    main()
